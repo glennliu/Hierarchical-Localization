@@ -225,6 +225,8 @@ def match_from_paths(conf: Dict,
     Model = dynamic_load(matchers, conf['model']['name'])
     model = Model(conf['model']).eval().to(device)
 
+    import time 
+    t0 = time.time()
     dataset = FeaturePairsDataset(pairs, feature_path_q, feature_path_ref)
     loader = torch.utils.data.DataLoader(
         dataset, num_workers=5, batch_size=1, shuffle=False, pin_memory=True)
@@ -237,7 +239,7 @@ def match_from_paths(conf: Dict,
         pair = names_to_pair(*pairs[idx])
         writer_queue.put((pair, pred))
     writer_queue.join()
-    logger.info('Finished exporting matches.')
+    logger.info('Finished exporting matches in {} sec.'.format(time.time()-t0))
 
 
 if __name__ == '__main__':

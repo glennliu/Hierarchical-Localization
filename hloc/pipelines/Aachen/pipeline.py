@@ -1,7 +1,9 @@
 from pathlib import Path
 from pprint import pformat
 import argparse
+import sys
 
+# sys.path.append('/home/cliuci/code_ws/Hierarchical-Localization/hloc')
 from ... import extract_features, match_features
 from ... import pairs_from_covisibility, pairs_from_retrieval
 from ... import colmap_from_nvm, triangulation, localize_sfm
@@ -40,6 +42,7 @@ matcher_conf = match_features.confs['superglue']
 
 features = extract_features.main(feature_conf, images, outputs)
 
+# sfm with pose priors
 colmap_from_nvm.main(
     dataset / '3D-models/aachen_cvpr2018_db.nvm',
     dataset / '3D-models/database_intrinsics.txt',
@@ -58,12 +61,13 @@ triangulation.main(
     features,
     sfm_matches)
 
+# hierarchical localization
 global_descriptors = extract_features.main(retrieval_conf, images, outputs)
 pairs_from_retrieval.main(
     global_descriptors, loc_pairs, args.num_loc,
-    query_prefix='query', db_model=reference_sfm)
+    query_prefix='query', db_model=reference_sfm) # global match
 loc_matches = match_features.main(
-    matcher_conf, loc_pairs, feature_conf['output'], outputs)
+    matcher_conf, loc_pairs, feature_conf['output'], outputs) # local match
 
 localize_sfm.main(
     reference_sfm,

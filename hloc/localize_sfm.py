@@ -76,8 +76,8 @@ def pose_from_cluster(
     kpq = get_keypoints(features_path, qname)
     kpq += 0.5  # COLMAP coordinates
 
-    kp_idx_to_3D = defaultdict(list)
-    kp_idx_to_3D_to_db = defaultdict(lambda: defaultdict(list))
+    kp_idx_to_3D = defaultdict(list) # {fets_idx: [pt3d_idx, ...]}
+    kp_idx_to_3D_to_db = defaultdict(lambda: defaultdict(list)) # {fets_idx: {pt3d_idx: [db_idx, ...]}}
     num_matches = 0
     for i, db_id in enumerate(db_ids):
         image = localizer.reconstruction.images[db_id]
@@ -90,14 +90,14 @@ def pose_from_cluster(
         matches, _ = get_matches(matches_path, qname, image.name)
         matches = matches[points3D_ids[matches[:, 1]] != -1]
         num_matches += len(matches)
-        for idx, m in matches:
+        for idx, m in matches: # fts_idx, pt3d_idx
             id_3D = points3D_ids[m]
             kp_idx_to_3D_to_db[idx][id_3D].append(i)
             # avoid duplicate observations
             if id_3D not in kp_idx_to_3D[idx]:
                 kp_idx_to_3D[idx].append(id_3D)
 
-    idxs = list(kp_idx_to_3D.keys())
+    idxs = list(kp_idx_to_3D.keys()) # features indices
     mkp_idxs = [i for i in idxs for _ in kp_idx_to_3D[i]]
     mp3d_ids = [j for i in idxs for j in kp_idx_to_3D[i]]
     ret = localizer.localize(kpq, mkp_idxs, mp3d_ids, query_camera, **kwargs)

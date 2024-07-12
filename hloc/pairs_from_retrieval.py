@@ -91,11 +91,16 @@ def main(descriptors, output, num_matched,
     if len(db_names) == 0:
         raise ValueError('Could not find any database image.')
     query_names = parse_names(query_prefix, query_list, query_names_h5)
+    # random sample 20 images names
+    sample_name_indices = np.random.choice(len(query_names), 20, replace=False)
+    # query_names = [query_names[i] for i in sample_name_indices]
+    
+    print('query {} images against {} database images'.format(len(query_names), len(db_names)))
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    db_desc = get_descriptors(db_names, db_descriptors, name2db)
-    query_desc = get_descriptors(query_names, descriptors)
-    sim = torch.einsum('id,jd->ij', query_desc.to(device), db_desc.to(device))
+    db_desc = get_descriptors(db_names, db_descriptors, name2db) # (M, 4096)
+    query_desc = get_descriptors(query_names, descriptors) # (N, 4096)
+    sim = torch.einsum('id,jd->ij', query_desc.to(device), db_desc.to(device)) # (N, M)
 
     # Avoid self-matching
     self = np.array(query_names)[:, None] == np.array(db_names)[None]
