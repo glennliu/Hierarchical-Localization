@@ -227,6 +227,7 @@ def main(
     image_list: Optional[Union[Path, List[str]]] = None,
     feature_path: Optional[Path] = None,
     overwrite: bool = False,
+    duration_list: List[float] = None,
 ) -> Path:
     logger.info(
         "Extracting local features with configuration:" f"\n{pprint.pformat(conf)}"
@@ -251,6 +252,9 @@ def main(
     loader = torch.utils.data.DataLoader(
         dataset, num_workers=1, shuffle=False, pin_memory=True
     )
+    import time
+    t0 = time.time()
+    
     for idx, data in enumerate(tqdm(loader)):
         name = dataset.names[idx]
         pred = model({"image": data["image"].to(device, non_blocking=True)})
@@ -291,8 +295,14 @@ def main(
                 raise error
 
         del pred
+    t1 = time.time()
+    duration = t1 - t0
+    if duration_list is not None:
+        duration_list.append(duration)
 
-    logger.info("Finished exporting features.")
+    logger.info("Finished exporting features for {} frames. It takes: {:.3f} sec".format(
+        len(dataset.names),
+        duration))
     return feature_path
 
 

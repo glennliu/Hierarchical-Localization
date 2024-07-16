@@ -81,6 +81,7 @@ def main(
     db_list=None,
     db_model=None,
     db_descriptors=None,
+    duration_list=None,
 ):
     logger.info("Extracting image pairs from a retrieval database.")
 
@@ -103,11 +104,10 @@ def main(
         raise ValueError("Could not find any database image.")
     query_names = parse_names(query_prefix, query_list, query_names_h5)
     # random sample 20 images names
-    sample_name_indices = np.random.choice(len(query_names), 20, replace=False)
-    # query_names = [query_names[i] for i in sample_name_indices]
-    
-    print('query {} images against {} database images'.format(len(query_names), len(db_names)))
 
+    import time    
+    print('query {} images against {} database images'.format(len(query_names), len(db_names)))
+    t0 = time.time()
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     db_desc = get_descriptors(db_names, db_descriptors, name2db) # (M, 4096)
     query_desc = get_descriptors(query_names, descriptors) # (N, 4096)
@@ -117,6 +117,11 @@ def main(
     self = np.array(query_names)[:, None] == np.array(db_names)[None]
     pairs = pairs_from_score_matrix(sim, self, num_matched, min_score=0)
     pairs = [(query_names[i], db_names[j]) for i, j in pairs]
+    t1 = time.time()
+    duration = t1 - t0
+    print('global query time: {:.3f}s'.format(duration))
+    if duration_list is not None:
+        duration_list.append(duration)
 
     logger.info(f"Found {len(pairs)} pairs.")
     with open(output, "w") as f:

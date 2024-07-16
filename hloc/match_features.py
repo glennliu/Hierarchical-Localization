@@ -153,6 +153,7 @@ def main(
     matches: Optional[Path] = None,
     features_ref: Optional[Path] = None,
     overwrite: bool = False,
+    duration_list = None,
 ) -> Path:
     if isinstance(features, Path) or Path(features).exists():
         features_q = features
@@ -171,7 +172,7 @@ def main(
 
     if features_ref is None:
         features_ref = features_q
-    match_from_paths(conf, pairs, matches, features_q, features_ref, overwrite)
+    match_from_paths(conf, pairs, matches, features_q, features_ref, overwrite, duration_list)
 
     return matches
 
@@ -207,6 +208,7 @@ def match_from_paths(
     feature_path_q: Path,
     feature_path_ref: Path,
     overwrite: bool = False,
+    duration_list = None,
 ) -> Path:
     logger.info(
         "Matching local features with configuration:" f"\n{pprint.pformat(conf)}"
@@ -231,13 +233,13 @@ def match_from_paths(
     model = Model(conf["model"]).eval().to(device)
 
     import time 
-    t0 = time.time()
     dataset = FeaturePairsDataset(pairs, feature_path_q, feature_path_ref)
     loader = torch.utils.data.DataLoader(
         dataset, num_workers=5, batch_size=1, shuffle=False, pin_memory=True
     )
     writer_queue = WorkQueue(partial(writer_fn, match_path=match_path), 5)
-
+    
+    t0 = time.time()
     for idx, data in enumerate(tqdm(loader, smoothing=0.1)):
         data = {
             k: v if k.startswith("image") else v.to(device, non_blocking=True)
@@ -247,7 +249,11 @@ def match_from_paths(
         pair = names_to_pair(*pairs[idx])
         writer_queue.put((pair, pred))
     writer_queue.join()
-    logger.info('Finished exporting matches in {} sec.'.format(time.time()-t0))
+    duration = time.time() - t0
+    if duration_list is not None:
+        duration_list.append(duration)
+    
+    logger.info('Finished exporting {} candidate matches in {:.3f} sec.'.format(len(pairs),duration))
 
 
 if __name__ == "__main__":

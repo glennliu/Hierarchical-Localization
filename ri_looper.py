@@ -1,12 +1,18 @@
 import os, glob 
 import time
+import cv2
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 from pathlib import Path
 from hloc import extract_features, match_features, localize_sfm
 from hloc import visualization
 import hloc.pairs_from_retrieval as pairs_from_retrieval
+import hloc.pairs_from_exhaustive as pairs_from_exhaustive
 from hloc.utils import read_write_model, viz
 from hloc.utils.database import COLMAPDatabase, pair_id_to_image_ids, blob_to_array
+from hloc.utils import io
+from hloc.utils.parsers import parse_retrieval
+from hloc.utils.io import get_matches
 
 def get_image_idxs(db_dir):
     from scipy.spatial.transform import Rotation as R
@@ -39,7 +45,97 @@ def update_3d_keypoints(db_dir):
         print(image_id, keypoint.shape)
 
     db.close()
+
+def save_loop_pairs(out_dir:str, loop_pairs:list):
+    with open(out_dir,'w') as f:
+        f.write('# src_frame ref_frame\n')
+        for pair in loop_pairs:
+            f.write('{} {}\n'.format(pair[0],pair[1]))
+        f.close()
+        
+def save_loop_transformation(out_dir:str, loop_pairs:list, loop_transformations:list, valid_only:bool):
+    with open(out_dir,'w') as f:
+        count = 0
+        f.write('# src_frame ref_frame tx ty tz qx qy qz qw\n')
+        for pair, T in zip(loop_pairs, loop_transformations):
+            fail_pnp = np.allclose(T, np.eye(4))
+            if fail_pnp and valid_only:
+                continue
+            
+            translation = T[:3,3]
+            quaternion = R.from_matrix(T[:3,:3]).as_quat()
+            f.write('{} {} '.format(pair[0],pair[1]))
+            f.write('{:.3f} {:.3f} {:.3f} '.format(translation[0],translation[1],translation[2]))
+            f.write('{:.6f} {:.6f} {:.6f} {:.6f}\n'.format(quaternion[0],quaternion[1],quaternion[2],quaternion[3]))
+            count+=1
+        f.close()
+        print('Save {}/{} loop transformations.'.format(count,len(loop_transformations)))
+
+def save_frame_list(frames:list, out_dir:str):
+    with open(out_dir,'w') as f:
+        for frame in frames:
+            f.write('{}\n'.format(frame))
+        f.close()
+
+def read_frame_list(filedir:str):
+    frames = []
+    with open(filedir,'r') as f:
+        for line in f.readlines():
+            frames.append(line.strip())
+        f.close()
+        return frames
     
+def read_loop_pairs(in_dir:str):
+    loop_pairs = []
+    with open(in_dir,'r') as f:
+        for line in f.readlines():
+            if '#' in line: continue
+            loop_pairs.append(line.strip().split())
+        f.close()
+    return loop_pairs
+
+def read_loop_transformations(in_dir:str):
+    loop_pairs = []
+    loop_transformations = []
+    with open(in_dir,'r') as f:
+        for line in f.readlines():
+            if '#' in line: continue
+            elements = line.strip().split()
+            src_frame = elements[0]
+            ref_frame = elements[1]
+            tvec = np.array([float(x) for x in elements[2:5]])
+            quat = np.array([float(x) for x in elements[5:9]])
+            T_ref_src = np.eye(4)
+            T_ref_src[:3,:3] = R.from_quat(quat).as_matrix()
+            T_ref_src[:3,3] = tvec
+            
+            loop_pairs.append([src_frame, ref_frame])
+            loop_transformations.append(T_ref_src)
+            # loop_transformations.append({'src_frame':src_frame, 
+            #                             'ref_frame':ref_frame, 
+            #                             'T_ref_src':T_ref_src})
+        f.close()
+        return loop_pairs, loop_transformations
+            
+def get_ordered_matches(dense_match_dir:str, query_name, ref_candidate_names):
+    candidate_names = []
+    candidate_match_numbers = []
+    
+    
+    for candidate in ref_candidate_names:
+        matches, scores = get_matches(dense_match_dir, query_name, candidate)        
+        candidate_names.append(candidate)
+        candidate_match_numbers.append(matches.shape[0])
+    
+    candidate_match_numbers = np.array(candidate_match_numbers)
+    rank_selections = np.argsort(candidate_match_numbers)[::-1]
+    rank_names = []
+    
+    for idx in rank_selections:
+        rank_names.append(candidate_names[idx])
+        
+    return rank_names
+        
 
 def find_top_k_matches(frames:list,matches:list,k:int):
     '''
@@ -104,40 +200,228 @@ def create_queries_match(geometry_matches):
             queries_match[query_name]['matches'].append(matches)
             queries_match[query_name]['raw_matched'].append(verified_match_info['original_matched'])
     return queries_match
+
+def construct_3d_keypoints(kpts, depth, K, depth_scale=1000.0):
+    pts3d = np.zeros((kpts.shape[0],3))
+    for i in range(kpts.shape[0]):
+        x,y = kpts[i,:2]
+        z = depth[int(y),int(x)] / depth_scale
+        if(z>0.01):
+            pts3d[i] = np.dot(np.linalg.inv(K),np.array([x*z,y*z,z]))
+        
+    return pts3d
+    
+
+def computeLoopTransformation(src_folder, src_frame, ref_folder, ref_frame, kpts_src, kpts_ref, matches):
+    src_depth = cv2.imread('{}/depth/{}.png'.format(src_folder,src_frame),cv2.IMREAD_UNCHANGED) 
+    # ref_depth = cv2.imread('{}/depth/{}.png'.format(ref_folder,ref_frame),cv2.IMREAD_UNCHANGED)
+    K = np.loadtxt('{}/intrinsic/intrinsic_depth.txt'.format(src_folder))
+    K = K[:3,:3]
+    
+    pts_m_src = kpts_src[matches[:,0],:2] # (M,2)
+    pts_m_ref = kpts_ref[matches[:,1],:2] # (M,2)
+    pts_m_ref = pts_m_ref.astype(np.float64)
+    pts3d_m_src = construct_3d_keypoints(pts_m_src, src_depth, K)    
+    
+    mask = pts3d_m_src[:,2]>1e-3
+    pts3d_m_src = pts3d_m_src[mask]
+    pts_m_ref = pts_m_ref[mask]
+    
+    centroid3d = np.mean(pts3d_m_src, axis=0)
+    centroid2d = np.mean(pts_m_ref, axis=0)
+    # print('centroid3d: ', centroid3d)
+    # print('centroid2d: ', centroid2d)
+    print('ref_frame: ', ref_frame)
+    if pts3d_m_src.shape[0]<5:
+        return False, np.eye(4)
+    
+    # print('object points: ', pts3d_m_src.shape, pts3d_m_src.dtype)
+    # print('image points: ', pts_m_ref.shape, pts_m_ref.dtype)
+    rtval, rvec, tvec, inliers = cv2.solvePnPRansac(pts3d_m_src, pts_m_ref, K, None) 
+    T_ref_src = np.eye(4)
+    if rtval:
+        # print('{} matches'.format(matches.shape[0]))
+        # print('rvec:{},{},{}, tvec:{},{},{}'.format(rvec[0],rvec[1],rvec[2],tvec[0],tvec[1],tvec[2]))
+        inliers = inliers.squeeze()
+        R = cv2.Rodrigues(rvec)[0]
+        T_ref_src[:3,:3] = R
+        T_ref_src[:3,3] = tvec.squeeze()
+    else:
+        print('Fail PnP. {} valid matched features'.format(pts3d_m_src.shape[0]))
+        
+    
+    return rtval, T_ref_src
+    
+class TicToc:
+    def __init__(self):
+        self.tic()
+    def tic(self):
+        self.t0 = time.time()
+    def toc(self):
+        return time.time()-self.t0
     
 if __name__=='__main__':
     # Setup the paths
-    dataset = Path('/data2/sfm/uc0101b')
-    query_split = '05'
-    global_pairs = dataset/ 'pairs-query-netvlad50.txt'
-    viz_outputs = dataset/'viz'
-    if not os.path.exists(viz_outputs): 
-        os.mkdir(viz_outputs)
+    dataroot = Path('/data2/sgslam/scans')
+    sfm_dataroot = Path('/data2/sfm')
+    src_scan = 'uc0204_00a'
+    ref_scan = 'uc0204_00b'
+    overwrite = False
+    VIZ = True
+    SOLVEPNP = True
+    SAMPLE_GAP = 10
+    MIN_MATCHES = 30
+    
+    # Initialization
+    output_folder = sfm_dataroot/'{}-{}'.format(src_scan,ref_scan)
+    global_pairs = output_folder/ 'pairs-query-netvlad50.txt'
+    loop_folder = output_folder/'loop_pairs'
+    dense_matches = output_folder/ 'matches-superpoint-lightglue.h5'
+    viz_outputs = output_folder/'viz'
+    # pnp_outputs = output_folder/'pnp'
+    global_feat_name = 'netvlad.h5'
+    local_feat_name = 'superpoint.h5'
+    
+    src_global_feat_dir = output_folder/'{}_{}'.format(src_scan,global_feat_name)
+    ref_global_feat_dir = output_folder/'{}_{}'.format(ref_scan,global_feat_name)
+    src_local_feat_dir = output_folder/'{}_{}'.format(src_scan,local_feat_name)
+    ref_local_feat_dir = output_folder/'{}_{}'.format(ref_scan,local_feat_name)
+    global_topk = 10
+    dense_topk = 3
 
-    images = dataset / 'images_upright'
+    if not os.path.exists(output_folder):
+        os.mkdir(output_folder)
+    if not os.path.exists(viz_outputs):
+        os.mkdir(viz_outputs)
+    if not os.path.exists(loop_folder):
+        os.mkdir(loop_folder)
+
+    src_image_list = [p.relative_to(dataroot/src_scan).as_posix() for p in (dataroot/src_scan/'rgb').iterdir()]
+    ref_image_list = [p.relative_to(dataroot/ref_scan).as_posix() for p in (dataroot/ref_scan/'rgb').iterdir()]
+    src_image_list = sorted(src_image_list)[::SAMPLE_GAP]
+    ref_image_list = sorted(ref_image_list)[::SAMPLE_GAP]
+    
+    # src_image_list = src_image_list[:1]
+    save_frame_list([img.split('/')[-1].split('.')[0] for img in src_image_list], 
+                    output_folder/'src_frames.txt')
+    save_frame_list([img.split('/')[-1].split('.')[0] for img in ref_image_list],
+                    output_folder/'ref_frames.txt')
     
     # 
     retrieval_conf = extract_features.confs['netvlad']
     feature_conf = extract_features.confs['superpoint_inloc']
     matcher_conf = match_features.confs['superpoint+lightglue']
+    from timing import TimingRecord
+    timing_record = TimingRecord()
     
-    # global match
-    t0 = time.time()
-    global_features_dir = extract_features.main(retrieval_conf, images, dataset) # global features
-    t1 = time.time()
-    pairs_from_retrieval.main(global_features_dir, global_pairs, 50,
-                        query_prefix='query',db_prefix='db') # global match 
-    t2 = time.time()
-    print('query global match in {:.3f} sec'.format(t2-t1))
+    # 1. global features
+    tictoc = TicToc()
+    extract_features.main(retrieval_conf, 
+                        dataroot/src_scan, 
+                        image_list=src_image_list, 
+                        feature_path=src_global_feat_dir, 
+                        overwrite=overwrite,
+                        duration_list = timing_record.netvlad) # global features         
+    print('Extract global features in {:.3f} sec'.format(tictoc.toc())) #41.1 sec
+    extract_features.main(retrieval_conf, dataroot/ref_scan, image_list=ref_image_list, feature_path=ref_global_feat_dir, overwrite=overwrite) # global features
 
-    # local match
-    local_features_dir = extract_features.main(feature_conf, images, dataset)
-    t3 = time.time()
-    loc_matches = match_features.main(
-        matcher_conf, global_pairs, feature_conf['output'], dataset) # local match
-    t4 = time.time()
-    print('query local match in {:.3f} sec'.format(t4-t3))
-    # exit(0)
+    for query_frame in src_image_list:
+        global_loop_dir = loop_folder/'{}.txt'.format(query_frame.split('/')[-1].split('.')[0])
+   
+        
+        pairs_from_retrieval.main(src_global_feat_dir, global_loop_dir, global_topk,
+                                query_list=[query_frame],
+                                db_descriptors=ref_global_feat_dir,
+                                duration_list=timing_record.gmatch)
+    print('{} query frames. Global pairs from retrieval in {:.3f} sec'.format(
+        len(src_image_list), tictoc.toc())) # 42.6 sec    
+        
+    # 2. local match
+    tictoc.tic()
+    extract_features.main(feature_conf, 
+                          dataroot/src_scan, 
+                          image_list=src_image_list,
+                          feature_path=src_local_feat_dir, 
+                          overwrite=overwrite,
+                          duration_list=timing_record.superpoint) # local features
+    print('Extract superpoint features takes {:.3f} sec'.format(tictoc.toc())) # 59.8s
+    extract_features.main(feature_conf, dataroot/ref_scan, image_list=ref_image_list,feature_path=ref_local_feat_dir, overwrite=overwrite)
+    
+    for query_frame in src_image_list:
+        global_loop_dir = loop_folder/'{}.txt'.format(query_frame.split('/')[-1].split('.')[0])
+        match_features.main(matcher_conf, 
+                            global_loop_dir, 
+                            src_local_feat_dir, 
+                            matches= dense_matches, 
+                            features_ref=ref_local_feat_dir, 
+                            overwrite=overwrite,
+                            duration_list=timing_record.lmatch) # local match
+    t_dense_match = tictoc.toc()
+    print('Local matches {} query frames. It takes {:.3f} sec. {:.3f}s/frame'.format(
+        len(src_image_list),t_dense_match,t_dense_match/len(src_image_list))) # 209.1s
+
+    # 
+    # timing_record.analysis()
+
+    # 3. Estimate relative poses
+    # global_pair_candidates = parse_retrieval(global_pairs)
+    loop_pairs = [] # [query_frame, ref_frame]
+    loop_transformation = [] # T_ref_query
+    print('******** Estimate relative poses **********')
+    
+    for query_frame in src_image_list:
+        global_loop_dir = loop_folder/'{}.txt'.format(query_frame.split('/')[-1].split('.')[0])
+        
+        # if query_frame not in global_pair_candidates:
+        if not os.path.exists(global_loop_dir):
+            print('no matches for {}'.format(query_frame))
+            continue
+        print('--- {} ---'.format(query_frame))
+        kpts0 = io.get_keypoints(path=src_local_feat_dir, name=query_frame)
+        rgb0 = io.read_image(dataroot/src_scan/query_frame)
+        candidate_ref_frames = parse_retrieval(global_loop_dir)[query_frame]
+
+        rank_candidate_frames = get_ordered_matches(dense_matches, query_frame, candidate_ref_frames)
+        
+        for ref_candidate in rank_candidate_frames[:dense_topk]:
+            kpts1 = io.get_keypoints(path=ref_local_feat_dir, name=ref_candidate)
+            rgb1 = io.read_image(dataroot/ref_scan/ref_candidate)
+            matches, scores = get_matches(dense_matches, query_frame, ref_candidate)
+            assert(matches.shape[0]==scores.shape[0])
+            if((matches[:,0].max()>=kpts0.shape[0]) or 
+               (matches[:,1].max()>=kpts1.shape[0])): 
+                print('skip invalid matches for {}-{}'.format(query_frame,ref_candidate))
+                continue
+            if(matches.shape[0]<MIN_MATCHES):continue
+                 
+            if VIZ:
+                viz.plot_images([rgb0, rgb1], dpi=75)
+                viz.plot_matches(kpts0[matches[:, 0], :2], kpts1[matches[:, 1], :2], lw=1.5, a=0.5)
+                inliner_text = '{}/{} matched pts'.format(matches.shape[0],kpts0.shape[0])
+                viz.add_text(0,inliner_text)
+                output_name = query_frame.split('/')[-1][:-4]+'-'+ref_candidate.split('/')[-1][:-4]
+                viz.save_plot(viz_outputs/output_name)
+
+            tictoc.tic()
+            if SOLVEPNP:
+                rtval, T_ref_src = computeLoopTransformation(dataroot/ src_scan, 
+                                          query_frame.split('/')[-1].split('.')[0],
+                                          dataroot/ ref_scan,
+                                          ref_candidate.split('/')[-1].split('.')[0],
+                                          kpts0, kpts1,
+                                          matches)
+            else: T_ref_src = np.eye(4)
+
+            timing_record.pnp.append(tictoc.toc())
+            loop_pairs.append([query_frame.split('/')[-1].split('.')[0], 
+                               ref_candidate.split('/')[-1].split('.')[0]])
+            loop_transformation.append(T_ref_src)
+
+    save_loop_transformation(output_folder/'loop_transformations.txt', loop_pairs, loop_transformation, True)
+    # save_loop_pairs(output_folder/'loop_pairs.txt', loop_pairs)
+    timing_record.analysis()
+    
+    exit(0)
     
     # export database 
     from hloc.triangulation import import_features, import_matches, estimation_and_geometric_verification
@@ -175,8 +459,8 @@ if __name__=='__main__':
         for db_frame, verified_matches, raw_matched in zip(np.array(db_frames)[selection],np.array(matches)[selection],np.array(raw_matched)[selection]):
             if verified_matches.shape[0]<MIN_MATCHES:
                 break
-            query_img = io.read_image(images/query_frame)
-            db_img = io.read_image(images/db_frame)
+            query_img = io.read_image(image_dir/query_frame)
+            db_img = io.read_image(image_dir/db_frame)
             viz.plot_images([query_img,db_img], dpi=75)
             
             kpts0 = io.get_keypoints(path=local_features_dir, name=query_frame)
