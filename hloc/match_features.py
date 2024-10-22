@@ -239,17 +239,20 @@ def match_from_paths(
     )
     writer_queue = WorkQueue(partial(writer_fn, match_path=match_path), 5)
     
-    t0 = time.time()
+    duration = 0.0
     for idx, data in enumerate(tqdm(loader, smoothing=0.1)):
         data = {
             k: v if k.startswith("image") else v.to(device, non_blocking=True)
             for k, v in data.items()
         }
+        
+        t0 = time.time()
         pred = model(data)
+        duration += time.time() - t0
+
         pair = names_to_pair(*pairs[idx])
         writer_queue.put((pair, pred))
     writer_queue.join()
-    duration = time.time() - t0
     if duration_list is not None:
         duration_list.append(duration)
     

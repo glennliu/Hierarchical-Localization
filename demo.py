@@ -1,6 +1,7 @@
 import os
-import tqdm, tqdm.notebook
-tqdm.tqdm = tqdm.notebook.tqdm  # notebook-friendly progress bars
+import tqdm
+# import tqdm.notebook
+# tqdm.tqdm = tqdm.notebook.tqdm  # notebook-friendly progress bars
 from pathlib import Path
 import numpy as np
 
@@ -11,9 +12,12 @@ from hloc.utils import viz
 
 
 if __name__=='__main__':
-    scan = 'sacre_coeur'
-    images = Path('datasets/')/scan
-    outputs = Path('outputs')/scan
+    # scan = 'lg0101'
+    images = Path('/data2/sgslam/scans/uc0101_00a')
+    outputs = Path('/data2/sfm/uc0101a')
+    
+    # images = Path('datasets/')/scan
+    # outputs = Path('outputs')/scan
     sfm_pairs = outputs / 'pairs-sfm.txt'
     loc_pairs = outputs / 'pairs-loc.txt'
     sfm_dir = outputs / 'sfm'
@@ -26,16 +30,17 @@ if __name__=='__main__':
     feature_conf = extract_features.confs['disk']
     matcher_conf = match_features.confs['disk+lightglue']
 
-    references = [p.relative_to(images).as_posix() for p in (images/'mapping').iterdir()]
+    references = [p.relative_to(images).as_posix() for p in (images/'rgb').iterdir()]
     print(len(references), "mapping images")
-    plot_images([read_image(images / r) for r in references], dpi=25)
+    # plot_images([read_image(images / r) for r in references], dpi=25)
     # viz.plot_matches(read_image(images / references[0]), read_image(images / references[1]), np.loadtxt(loc_pairs), color='lime')
-    viz.save_plot(outputs / 'mapping.png')
+    # viz.save_plot(outputs / 'mapping.png')
 
     # Extract local features and match them
     extract_features.main(feature_conf, images, image_list=references, feature_path=features)
     pairs_from_exhaustive.main(sfm_pairs, image_list=references)
     match_features.main(matcher_conf, sfm_pairs, features=features, matches=matches)
+    exit(0)
 
     # sfm
     model = reconstruction.main(sfm_dir, images, sfm_pairs, features, matches, image_list=references)

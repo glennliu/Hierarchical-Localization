@@ -1,4 +1,9 @@
 import os, glob 
+
+# add current path to sys.path
+import sys
+sys.path.append('/home/cliuci/code_ws/Hierarchical-Localization')
+
 import time
 import cv2
 import numpy as np
@@ -79,6 +84,7 @@ def save_frame_list(frames:list, out_dir:str):
 
 def read_frame_list(filedir:str):
     frames = []
+    print(filedir)
     with open(filedir,'r') as f:
         for line in f.readlines():
             frames.append(line.strip())
@@ -150,6 +156,19 @@ def find_top_k_matches(frames:list,matches:list,k:int):
         frame_array = np.array(frames)
         return selected
 
+def prepare_candidate_images(ref_image_list, src_frame_dir):
+    src_frame_name = src_frame_dir.split('/')[-1].split('.')[0]
+    src_frame_id = int(src_frame_name.split('-')[-1])
+    candidate_frames = []
+    
+    for ref_frame in ref_image_list:
+        ref_frame_name = ref_frame.split('/')[-1].split('.')[0]
+        ref_frame_id = int(ref_frame_name.split('-')[-1])
+        if(ref_frame_id<=src_frame_id):
+            candidate_frames.append(ref_frame)
+            
+    return candidate_frames
+
 def read_verified_matches(db_dir:str):
     db = COLMAPDatabase.connect(db_dir)
     original_matches = db.execute("SELECT pair_id, rows FROM matches")
@@ -202,6 +221,7 @@ def create_queries_match(geometry_matches):
     return queries_match
 
 def construct_3d_keypoints(kpts, depth, K, depth_scale=1000.0):
+    assert depth is not None
     pts3d = np.zeros((kpts.shape[0],3))
     for i in range(kpts.shape[0]):
         x,y = kpts[i,:2]
@@ -214,6 +234,8 @@ def construct_3d_keypoints(kpts, depth, K, depth_scale=1000.0):
 
 def computeLoopTransformation(src_folder, src_frame, ref_folder, ref_frame, kpts_src, kpts_ref, matches):
     src_depth = cv2.imread('{}/depth/{}.png'.format(src_folder,src_frame),cv2.IMREAD_UNCHANGED) 
+    if src_depth is None:
+        return False, np.eye(4)
     # ref_depth = cv2.imread('{}/depth/{}.png'.format(ref_folder,ref_frame),cv2.IMREAD_UNCHANGED)
     K = np.loadtxt('{}/intrinsic/intrinsic_depth.txt'.format(src_folder))
     K = K[:3,:3]
@@ -247,7 +269,7 @@ def computeLoopTransformation(src_folder, src_frame, ref_folder, ref_frame, kpts
         T_ref_src[:3,:3] = R
         T_ref_src[:3,3] = tvec.squeeze()
     else:
-        print('Fail PnP. {} valid matched features'.format(pts3d_m_src.shape[0]))
+        print('Fail PnP. {} input matched features'.format(pts3d_m_src.shape[0]))
         
     
     return rtval, T_ref_src
@@ -259,21 +281,23 @@ class TicToc:
         self.t0 = time.time()
     def toc(self):
         return time.time()-self.t0
-    
-if __name__=='__main__':
+        
+def multi_session_slam(dataroot, sfm_output_dataroot,src_scan, ref_scan):
+    from hloc.utils import io
+
     # Setup the paths
-    dataroot = Path('/data2/sgslam/scans')
-    sfm_dataroot = Path('/data2/sfm')
-    src_scan = 'uc0204_00a'
-    ref_scan = 'uc0204_00b'
-    overwrite = False
+    # dataroot = Path('/data2/sgslam/scans')
+    # sfm_dataroot = Path('/data2/sfm')
+    # src_scan = 'ab0201_03a'
+    # ref_scan = 'ab0201_03c'
+    overwrite = True
     VIZ = True
     SOLVEPNP = True
-    SAMPLE_GAP = 10
+    SAMPLE_GAP = 100
     MIN_MATCHES = 30
     
     # Initialization
-    output_folder = sfm_dataroot/'{}-{}'.format(src_scan,ref_scan)
+    output_folder = sfm_output_dataroot/'{}-{}'.format(src_scan,ref_scan)
     global_pairs = output_folder/ 'pairs-query-netvlad50.txt'
     loop_folder = output_folder/'loop_pairs'
     dense_matches = output_folder/ 'matches-superpoint-lightglue.h5'
@@ -323,7 +347,11 @@ if __name__=='__main__':
                         overwrite=overwrite,
                         duration_list = timing_record.netvlad) # global features         
     print('Extract global features in {:.3f} sec'.format(tictoc.toc())) #41.1 sec
-    extract_features.main(retrieval_conf, dataroot/ref_scan, image_list=ref_image_list, feature_path=ref_global_feat_dir, overwrite=overwrite) # global features
+    extract_features.main(retrieval_conf, 
+                          dataroot/ref_scan, 
+                          image_list=ref_image_list, 
+                          feature_path=ref_global_feat_dir, 
+                          overwrite=overwrite) # global features
 
     for query_frame in src_image_list:
         global_loop_dir = loop_folder/'{}.txt'.format(query_frame.split('/')[-1].split('.')[0])
@@ -417,10 +445,12 @@ if __name__=='__main__':
                                ref_candidate.split('/')[-1].split('.')[0]])
             loop_transformation.append(T_ref_src)
 
-    save_loop_transformation(output_folder/'loop_transformations.txt', loop_pairs, loop_transformation, True)
+    save_loop_transformation(output_folder/'loop_transformations.txt', loop_pairs, loop_transformation, False)
     # save_loop_pairs(output_folder/'loop_pairs.txt', loop_pairs)
     timing_record.analysis()
+    timing_record.write_to_file(output_folder/'timing.txt')
     
+    return True
     exit(0)
     
     # export database 
@@ -475,4 +505,244 @@ if __name__=='__main__':
             viz.save_plot(viz_outputs/output_name)
 
         # break
+
+def multi_agent_slam(dataroot, sfm_output_folder,src_scan, ref_scan):
+    from hloc.utils import io
+    overwrite = False
+    VIZ = False
+    SOLVEPNP = True
+    SAMPLE_GAP = 10
+    MIN_MATCHES = 3
+    
+    # Initialization
+    output_folder = sfm_output_folder/'{}-{}'.format(src_scan,ref_scan)
+    # global_pairs = output_folder/ 'pairs-query-netvlad50.txt'
+    loop_folder = output_folder/'loop_pairs'
+    dense_matches = output_folder/ 'matches-superpoint-lightglue.h5'
+    viz_outputs = output_folder/'viz'
+    global_feat_name = 'netvlad.h5'
+    local_feat_name = 'superpoint.h5'
+    
+    src_global_feat_dir = output_folder/'{}_{}'.format(src_scan,global_feat_name)
+    ref_global_feat_dir = output_folder/'{}_{}'.format(ref_scan,global_feat_name)
+    src_local_feat_dir = output_folder/'{}_{}'.format(src_scan,local_feat_name)
+    ref_local_feat_dir = output_folder/'{}_{}'.format(ref_scan,local_feat_name)
+    global_topk = 10
+    global_min_score = 0.01
+    dense_topk = 1
+
+    if not os.path.exists(output_folder):
+        os.mkdir(output_folder)
+    if not os.path.exists(viz_outputs):
+        os.mkdir(viz_outputs)
+    if not os.path.exists(loop_folder):
+        os.mkdir(loop_folder)
+
+    src_image_list = [p.relative_to(dataroot/src_scan).as_posix() for p in (dataroot/src_scan/'rgb').iterdir()]
+    ref_image_list = [p.relative_to(dataroot/ref_scan).as_posix() for p in (dataroot/ref_scan/'rgb').iterdir()]
+    src_image_list = sorted(src_image_list)[::SAMPLE_GAP]
+    ref_image_list = sorted(ref_image_list)[::SAMPLE_GAP]
+    # src_image_list = ['rgb/frame-000671.png']
+    print('src frames: {}, ref frames: {}'.format(len(src_image_list), len(ref_image_list)))
+    
+    save_frame_list([img.split('/')[-1].split('.')[0] for img in src_image_list], 
+                    output_folder/'src_frames.txt')
+    save_frame_list([img.split('/')[-1].split('.')[0] for img in ref_image_list],
+                    output_folder/'ref_frames.txt')
+
+    # 
+    retrieval_conf = extract_features.confs['netvlad']
+    feature_conf = extract_features.confs['superpoint_inloc']
+    matcher_conf = match_features.confs['superpoint+lightglue']
+    from timing import TimingRecord
+    timing_record = TimingRecord()
+    match_timing_record = []
+
+    # 1. global features
+    tictoc = TicToc()
+    extract_features.main(retrieval_conf, 
+                        dataroot/src_scan, 
+                        image_list=src_image_list, 
+                        feature_path=src_global_feat_dir, 
+                        overwrite=overwrite,
+                        duration_list = timing_record.netvlad) # global features         
+    extract_features.main(retrieval_conf, 
+                          dataroot/ref_scan, 
+                          image_list=ref_image_list, 
+                          feature_path=ref_global_feat_dir, 
+                          overwrite=overwrite) # global features
+
+    # 2. Local features
+    tictoc.tic()
+    extract_features.main(feature_conf,
+                            dataroot/src_scan,
+                            image_list=src_image_list,
+                            feature_path=src_local_feat_dir,
+                            overwrite=overwrite,
+                            duration_list=timing_record.superpoint) # local features
+    print('Extract superpoint features takes {:.3f} sec'.format(tictoc.toc())) 
+    extract_features.main(feature_conf, 
+                          dataroot/ref_scan, 
+                          image_list=ref_image_list,
+                          feature_path=ref_local_feat_dir, 
+                          overwrite=overwrite)
+    if overwrite:
+        timing_record.src_frames = len(src_image_list)
+        timing_record.write_to_file_new(output_folder/'features_timing.txt')
+    
+    # 3. Hierachical matching
+    for query_id, query_frame in enumerate(src_image_list):
+        # if query_id<1: continue
+        query_frame_name = query_frame.split('/')[-1].split('.')[0]
+        query_frame_id = int(query_frame_name.split('-')[-1])
+        if query_frame_id<1: continue
+        # if query_id>5:break
+        global_loop_dir = loop_folder/'{}.txt'.format(query_frame.split('/')[-1].split('.')[0])
+        # db_frames = ref_image_list[:query_frame_id]
+        db_frames = prepare_candidate_images(ref_image_list, query_frame)
+        if len(db_frames)<1:continue
+        print('query {} in {} db frames'.format(query_frame, len(db_frames)))
+        
+        # global match
+        tictoc.tic()
+        duration_gmatch = []
+        global_match_pairs = pairs_from_retrieval.main(src_global_feat_dir, 
+                                                    global_loop_dir, 
+                                                    num_matched = min(global_topk,len(db_frames)),
+                                                    query_list=[query_frame],
+                                                    db_list = db_frames,
+                                                    db_descriptors=ref_global_feat_dir,
+                                                    duration_list= duration_gmatch,
+                                                    min_score=global_min_score)
+        duration_gmatch = 1000 * duration_gmatch[0]
+        # print('find {} global matches in {:.3f} sec'.format(global_match_pairs,duration_gmatch))
+
+        # local match
+        tictoc.tic()
+        duration_lmatch = []
+        match_features.main(matcher_conf, 
+                            global_loop_dir, 
+                            src_local_feat_dir, 
+                            matches= dense_matches, 
+                            features_ref=ref_local_feat_dir, 
+                            overwrite=overwrite,
+                            duration_list=duration_lmatch)
+        if len(duration_lmatch)>0:
+            duration_lmatch = 1000 * duration_lmatch[0]
+        else:
+            duration_lmatch = 0
+        print('Global match takes {:.3f} ms, local match takes {:.3f} ms'.format(duration_gmatch,duration_lmatch))
+        frame_time = np.array([len(db_frames), global_match_pairs, duration_gmatch, duration_lmatch])
+        match_timing_record.append(frame_time)
+
+    #
+    if overwrite:
+        match_timing_record = np.array(match_timing_record)
+        np.savetxt(output_folder/'match_timing.txt',match_timing_record, fmt='%.3f')
+    
+    # 4. Loop closure
+    # loop_pairs = [] # [query_frame, ref_frame]
+    # loop_transformation = [] # T_ref_query
+    print('******** Estimate relative poses **********')
+    pnp_folder = output_folder/'pnp'
+    if os.path.exists(pnp_folder)==False:
+        os.mkdir(pnp_folder)
+    pnp_timing_record = []
+    
+    for query_frame in src_image_list:
+        pnp_duration = 0.0
+        global_loop_dir = loop_folder/'{}.txt'.format(query_frame.split('/')[-1].split('.')[0])
+        
+        # if query_frame not in global_pair_candidates:
+        if not os.path.exists(global_loop_dir):
+            print('no matches for {}'.format(query_frame))
+            continue
+        print('--- {}-{} ---'.format(src_scan, query_frame))
+        kpts0 = io.get_keypoints(path=src_local_feat_dir, name=query_frame)
+        rgb0 = io.read_image(dataroot/src_scan/query_frame)
+        candidate_ref_frames = parse_retrieval(global_loop_dir)
+        if query_frame not in candidate_ref_frames:
+            continue
+        candidate_ref_frames = candidate_ref_frames[query_frame]
+
+        tictoc.tic()
+        rank_candidate_frames = get_ordered_matches(dense_matches, query_frame, candidate_ref_frames)
+        pnp_duration += tictoc.toc()
+        print('{} ref frames'.format(len(rank_candidate_frames)))
+        if(len(rank_candidate_frames)<1): continue
+        select_candidates = min(dense_topk,len(rank_candidate_frames))
+
+        # compute PnP for all the loops
+        frame_pairs = []
+        loop_transformatins = []
+        query_frame_name = query_frame.split('/')[-1].split('.')[0]
+
+        for ref_candidate in rank_candidate_frames[:select_candidates]:
+            ref_frame_name = ref_candidate.split('/')[-1].split('.')[0]
+            kpts1 = io.get_keypoints(path=ref_local_feat_dir, name=ref_candidate)
+            rgb1 = io.read_image(dataroot/ref_scan/ref_candidate)
+            matches, scores = get_matches(dense_matches, query_frame, ref_candidate)
+            assert(matches.shape[0]==scores.shape[0])
+            if(matches is None):continue
+            if(matches.shape[0]<1): continue
+            if((matches[:,0].max()>=kpts0.shape[0]) or 
+               (matches[:,1].max()>=kpts1.shape[0])): 
+                print('skip invalid matches for {}-{}'.format(query_frame,ref_candidate))
+                continue
+            if(matches.shape[0]<MIN_MATCHES):continue
+                 
+            if VIZ:
+                viz.plot_images([rgb0, rgb1], dpi=75)
+                viz.plot_matches(kpts0[matches[:, 0], :2], kpts1[matches[:, 1], :2], lw=1.5, a=0.5)
+                # inliner_text = '{}/{} matched pts'.format(matches.shape[0],kpts0.shape[0])
+                # viz.add_text(0,inliner_text)
+                output_name = query_frame_name+'-'+ref_frame_name
+                # query_frame.split('/')[-1][:-4]+'-'+ref_candidate.split('/')[-1][:-4]
+                viz.save_plot(viz_outputs/output_name)
+
+            tictoc.tic()
+            if SOLVEPNP:
+                rtval, T_ref_src = computeLoopTransformation(dataroot/ src_scan, 
+                                          query_frame_name,
+                                          dataroot/ ref_scan,
+                                          ref_frame_name,
+                                          kpts0, kpts1,
+                                          matches)
+            else: T_ref_src = np.eye(4)
+            pnp_duration += tictoc.toc()
             
+            frame_pairs.append([query_frame_name, ref_frame_name])
+            loop_transformatins.append(T_ref_src)
+
+        # Save loop transformations
+        save_loop_transformation(pnp_folder/'{}.txt'.format(query_frame_name), frame_pairs, loop_transformatins, False)
+        pnp_timing_record.append(pnp_duration)
+
+    pnp_timing_record = 1000 * np.array(pnp_timing_record)
+    np.savetxt(output_folder/'pnp_timing.txt',pnp_timing_record, fmt='%.3f')
+    print('Finished')
+
+if __name__=='__main__':
+    
+    dataroot = Path('/data2/sgslam/scans')
+    sfm_dataroot = Path('/data2/sfm')    
+    
+    #     
+    scene_pairs =[
+                #   ['uc0110_00a','uc0110_00b'],
+                ['uc0110_00a','uc0110_00c'],
+                ['uc0115_00a','uc0115_00b'],
+                ['uc0115_00a','uc0115_00c'],
+                ['uc0204_00a','uc0204_00c'],
+                ['uc0204_00a','uc0204_00b'],
+                ['uc0111_00a','uc0111_00b'],
+                ['ab0201_03c','ab0201_03a'],
+                ['ab0302_00a','ab0302_00b'],
+                ['ab0403_00c','ab0403_00d'],
+                ['ab0401_00a','ab0401_00b']
+                  ]
+    
+    for pair in scene_pairs:
+        print('Processing {}-{}'.format(pair[0],pair[1]))
+        # multi_session_slam(dataroot, sfm_dataroot/'multi_session', pair[0], pair[1])
+        multi_agent_slam(dataroot, sfm_dataroot/'multi_agent', pair[0], pair[1])
