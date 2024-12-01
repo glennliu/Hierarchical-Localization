@@ -693,7 +693,9 @@ def multi_agent_slam(dataroot, sfm_output_folder,src_scan, ref_scan):
                  
             if VIZ:
                 viz.plot_images([rgb0, rgb1], dpi=75)
-                viz.plot_matches(kpts0[matches[:, 0], :2], kpts1[matches[:, 1], :2], lw=1.5, a=0.5)
+                viz.plot_matches(kpts0[matches[:, 0], :2], 
+                                 kpts1[matches[:, 1], :2], 
+                                 lw=1.5, a=0.5)
                 # inliner_text = '{}/{} matched pts'.format(matches.shape[0],kpts0.shape[0])
                 # viz.add_text(0,inliner_text)
                 output_name = query_frame_name+'-'+ref_frame_name
@@ -712,7 +714,7 @@ def multi_agent_slam(dataroot, sfm_output_folder,src_scan, ref_scan):
             pnp_duration += tictoc.toc()
             
             frame_pairs.append([query_frame_name, ref_frame_name])
-            loop_transformatins.append(T_ref_src)
+            loop_transformatins.append(T_ref_src) # transformation between images
 
         # Save loop transformations
         save_loop_transformation(pnp_folder/'{}.txt'.format(query_frame_name), frame_pairs, loop_transformatins, False)
