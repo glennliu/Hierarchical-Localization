@@ -142,11 +142,7 @@ def compute_gt_pnp(pnp_predictions:list,
         gt_pnp_map['{}-{}'.format(src_frame,ref_frame)] = T_gt_c1_c0
     
     return gt_pnp_map
-
-# def compute_registrations(dataroot, sfm_dataroot, src_scan, ref_scan, multi_session=False):
-    # sfm_scene = os.path.join(sfm_dataroot,'{}-{}'.format(src_scan,ref_scan))
-    # src_frame_poses = read_all_poses(os.path.join(dataroot,'scans',src_scan,'pose'))
-    # ref_frame_poses = read_all_poses(os.path.join(dataroot,'scans',ref_scan,'pose'))    
+ 
 def compute_relative_predictions(pnp_predictions:list,
                           src_frame_poses:list,
                           ref_frame_poses:list):
