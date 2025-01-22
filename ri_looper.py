@@ -5,7 +5,6 @@ import sys
 sys.path.append('/home/cliuci/code_ws/Hierarchical-Localization')
 
 import time
-import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 from pathlib import Path
@@ -20,6 +19,7 @@ from hloc.utils.parsers import parse_retrieval
 from hloc.utils.io import get_matches
 from hloc.utils import io
 from timing import TimingRecord
+from estimator import computeLoopTransformation, computeTeaserTransformation
 
 
 def get_image_idxs(db_dir):
@@ -244,59 +244,7 @@ def create_queries_match(geometry_matches):
             queries_match[query_name]['raw_matched'].append(verified_match_info['original_matched'])
     return queries_match
 
-def construct_3d_keypoints(kpts, depth, K, depth_scale=1000.0):
-    assert depth is not None
-    pts3d = np.zeros((kpts.shape[0],3))
-    for i in range(kpts.shape[0]):
-        x,y = kpts[i,:2]
-        z = depth[int(y),int(x)] / depth_scale
-        if(z>0.01):
-            pts3d[i] = np.dot(np.linalg.inv(K),np.array([x*z,y*z,z]))
-        
-    return pts3d
-    
 
-def computeLoopTransformation(src_folder, src_frame, ref_folder, ref_frame, kpts_src, kpts_ref, matches):
-    src_depth = cv2.imread('{}/depth/{}.png'.format(src_folder,src_frame),cv2.IMREAD_UNCHANGED) 
-    if src_depth is None:
-        return False, np.eye(4)
-    # ref_depth = cv2.imread('{}/depth/{}.png'.format(ref_folder,ref_frame),cv2.IMREAD_UNCHANGED)
-    K = np.loadtxt('{}/intrinsic/intrinsic_depth.txt'.format(src_folder))
-    K = K[:3,:3]
-    
-    pts_m_src = kpts_src[matches[:,0],:2] # (M,2)
-    pts_m_ref = kpts_ref[matches[:,1],:2] # (M,2)
-    pts_m_ref = pts_m_ref.astype(np.float64)
-    pts3d_m_src = construct_3d_keypoints(pts_m_src, src_depth, K)    
-    
-    mask = pts3d_m_src[:,2]>1e-3
-    pts3d_m_src = pts3d_m_src[mask]
-    pts_m_ref = pts_m_ref[mask]
-    
-    centroid3d = np.mean(pts3d_m_src, axis=0)
-    centroid2d = np.mean(pts_m_ref, axis=0)
-    # print('centroid3d: ', centroid3d)
-    # print('centroid2d: ', centroid2d)
-    if pts3d_m_src.shape[0]<5:
-        return False, np.eye(4)
-    
-    # print('object points: ', pts3d_m_src.shape, pts3d_m_src.dtype)
-    # print('image points: ', pts_m_ref.shape, pts_m_ref.dtype)
-    rtval, rvec, tvec, inliers = cv2.solvePnPRansac(pts3d_m_src, pts_m_ref, K, None) 
-    T_ref_src = np.eye(4)
-    if rtval:
-        # print('{} matches'.format(matches.shape[0]))
-        # print('rvec:{},{},{}, tvec:{},{},{}'.format(rvec[0],rvec[1],rvec[2],tvec[0],tvec[1],tvec[2]))
-        inliers = inliers.squeeze()
-        R = cv2.Rodrigues(rvec)[0]
-        T_ref_src[:3,:3] = R
-        T_ref_src[:3,3] = tvec.squeeze()
-    else:
-        print('Fail PnP. {} input matched features'.format(pts3d_m_src.shape[0]))
-        
-    
-    return rtval, T_ref_src
-    
 class TicToc:
     def __init__(self):
         self.tic()
@@ -754,12 +702,12 @@ def single_session_lcd(session_dir:Path,
     session_name = os.path.basename(session_dir)
 
     # Hard-code params
-    overwrite = False
-    VIZ = True
-    SOLVEPNP = True
+    overwrite = True
+    VIZ = False
+    ESTIMATOR = 'pnp' # 'teaser' or 'pnp'
     SAMPLE_GAP = 10
     MIN_MATCHES = 3
-    WINDOW_FRAMES = 100
+    WINDOW_FRAMES = 300
     GLOABL_TOPK = 3
     global_min_score = 0.01
     LOCAL_TOPK = 1
@@ -772,6 +720,7 @@ def single_session_lcd(session_dir:Path,
     global_feat_name = 'netvlad.h5'
     local_feat_name = 'superpoint.h5'
     pnp_folder = output_folder/'pnp'
+    tmp_folder = output_folder/'tmp'
     
     # Configurations
     netvlad_feat_conf = extract_features.confs['netvlad']
@@ -791,6 +740,7 @@ def single_session_lcd(session_dir:Path,
     if not os.path.exists(loop_folder):
         os.mkdir(loop_folder)
     os.makedirs(pnp_folder,exist_ok=True)
+    os.makedirs(tmp_folder,exist_ok=True)
 
     # 
     src_image_list = [p.relative_to(session_dir).as_posix() for p in (session_dir/'rgb').iterdir()]
@@ -821,6 +771,7 @@ def single_session_lcd(session_dir:Path,
     
     
     # 3. Hierachical matching
+    count_superpoints = 0
     for query_id, query_frame in enumerate(src_image_list):
         query_frame_name = query_frame.split('/')[-1].split('.')[0]
         query_frame_id = int(query_frame_name.split('-')[-1])
@@ -843,7 +794,7 @@ def single_session_lcd(session_dir:Path,
                                                     duration_list= duration_gmatch,
                                                     min_score=global_min_score)
         duration_gmatch = 1000 * duration_gmatch[0]
-        # print('find {} global matches in {:.3f} sec'.format(global_match_pairs,duration_gmatch))
+
         if not os.path.exists(global_loop_dir):
             print('no matches for {}'.format(query_frame))
             continue
@@ -914,36 +865,65 @@ def single_session_lcd(session_dir:Path,
                 viz.save_plot(viz_outputs/output_name)
 
             tictoc.tic()
-            if SOLVEPNP:
+            if ESTIMATOR=='pnp':
                 rtval, T_ref_src = computeLoopTransformation(session_dir, 
-                                          query_frame_name,
-                                          session_dir,
-                                          ref_frame_name,
-                                          kpts0, kpts1,
-                                          matches)
-            else: T_ref_src = np.eye(4)
+                                            query_frame_name,
+                                            session_dir,
+                                            ref_frame_name,
+                                            kpts0, 
+                                            kpts1,
+                                            matches)
+            elif ESTIMATOR=='teaser':
+                import open3d as o3d
+                src_pcd, ref_pcd, corr_A, corr_B = computeTeaserTransformation(session_dir, 
+                                            query_frame_name,
+                                            session_dir,
+                                            ref_frame_name,
+                                            kpts0, 
+                                            kpts1,
+                                            matches)
+                pair_folder = os.path.join(tmp_folder, '{}-{}'.format(query_frame_name, ref_frame_name))
+                os.makedirs(pair_folder,exist_ok=True)                
+                if src_pcd is not None:
+                    o3d.io.write_point_cloud(os.path.join(pair_folder,'src.ply'), src_pcd)
+                    o3d.io.write_point_cloud(os.path.join(pair_folder,'ref.ply'), ref_pcd)
+                    np.save(os.path.join(pair_folder,'corr_A.npy'), corr_A)
+                    np.save(os.path.join(pair_folder,'corr_B.npy'), corr_B)
+                T_ref_src = np.eye(4)
+            else:
+                T_ref_src = np.eye(4)
+                print('No estimator. Set to identity transformation')
+            
             pnp_duration += tictoc.toc()
             
             frame_pairs.append([query_frame_name, ref_frame_name])
             loop_transformatins.append(T_ref_src) # transformation between images
 
         # Save loop transformations
-        save_loop_transformation(pnp_folder/'{}.txt'.format(query_frame_name), 
-                                 frame_pairs, 
-                                 loop_transformatins, 
-                                 False)
+        if ESTIMATOR=='pnp':
+            save_loop_transformation(pnp_folder/'{}.txt'.format(query_frame_name), 
+                                    frame_pairs, 
+                                    loop_transformatins, 
+                                    False)
+        
         # Timing
         frame_time = np.array([len(db_frames), global_match_pairs, 
                                duration_gmatch, duration_lmatch, 1000*pnp_duration])
         match_timing_record.append(frame_time)
-        
+        # break
+
     # 
     if len(match_timing_record)>0:
         match_timing_record = np.vstack(match_timing_record)
         mean_time = np.mean(match_timing_record,axis=0) # (5,)
-        header = '# db_frames, global_matches, global_match_time, local_match_time, pnp_time\n'
+        header = 'db_frames, global_matches, global_match_time, local_match_time, pnp_time'
         time_msg = ' '.join(['{:.3f}'.format(t) for t in mean_time])
-        print(header, time_msg)
+        print(header)
+        print(time_msg)
+        np.savetxt(output_folder/'match_timing.txt',
+                   match_timing_record, 
+                   fmt='%.3f',
+                   header=header)
 
 if __name__=='__main__':
     

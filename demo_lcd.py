@@ -2,7 +2,9 @@ import os, sys
 import numpy as np
 from pathlib import Path
 from ri_looper import single_session_lcd
+# from estimator import computeLoopTransformation
 from write_pose_graphs import read_all_poses, read_pnp_folder
+
 
 def relative_rotation_error(gt_rotations: np.ndarray, 
                             rotations: np.ndarray):
@@ -36,15 +38,15 @@ def realtive_translation_error(gt_translations: np.ndarray,
 def eval_loop(src_pose,
               ref_pose,
               T_pred_ref_src,
-              ROT_THRESHOLD = 5,
-              POS_THRESHOLD = 0.5):
-    
-    pred_ref_pose = T_pred_ref_src @ src_pose
+              ROT_THRESHOLD = 10,
+              POS_THRESHOLD = 1.0):
+    pred_ref_pose = src_pose @ np.linalg.inv(T_pred_ref_src)
     
     rre = relative_rotation_error(ref_pose[:3,:3], pred_ref_pose[:3,:3])
     rte = realtive_translation_error(ref_pose[:3,3], pred_ref_pose[:3,3])
     
     true_positive = (rre < ROT_THRESHOLD) & (rte < POS_THRESHOLD)
+    true_positive = int(true_positive)
     
     return rre, rte, true_positive
     
@@ -54,31 +56,36 @@ if __name__=='__main__':
     DATAROOT = Path('/data2/sgslam/scans')
     SFM_DATAROOT = Path('/data2/sfm/single_session')  
     RUN = True  
-    EVAL = True
+    EVAL = False
     
     #     
-    sessions = ['vins_reverse_loop']
-    
-    for session in sessions:
-        if RUN:
-            single_session_lcd(DATAROOT/session,SFM_DATAROOT/session)
+    session = 'vins_reverse_loop'
+    # session = 'vins_hard_loop'
+    tp_array = []
 
-        if EVAL:
-            output_result = '# src_frame, ref_frame, rre(deg), rte(m), tp\n'
-            print('Evaluate the session: {}'.format(session))
-            frame_poses = read_all_poses(os.path.join(DATAROOT, session, 'pose'))
-            pnp_predictions = read_pnp_folder(os.path.join(SFM_DATAROOT, session, 'pnp'))
+    if RUN:
+        single_session_lcd(DATAROOT/session,SFM_DATAROOT/session)
+
+    if EVAL:
+        output_result = '# src_frame, ref_frame, tp, rre(deg), rte(m)\n'
+        print('Evaluate the session: {}'.format(session))
+        frame_poses = read_all_poses(os.path.join(DATAROOT, session, 'pose'))
+        pnp_predictions = read_pnp_folder(os.path.join(SFM_DATAROOT, session, 'pnp'))
+        
+        for pred in pnp_predictions:
+            pose_src = frame_poses[pred['src_frame']]
+            pose_ref = frame_poses[pred['ref_frame']]
+            T_pnp = pred['pose']
             
-            for pred in pnp_predictions:
-                pose_src = frame_poses[pred['src_frame']]
-                pose_ref = frame_poses[pred['ref_frame']]
-                T_pnp = pred['pose']
-                
-                rre, rte, tp = eval_loop(pose_src, pose_ref, T_pnp)
-                output_result += '{}, {}, '.format(pred['src_frame'], 
-                                                   pred['ref_frame'])
-                output_result += '{:.3f}, {:.3f}, {}\n'.format(rre, rte, tp)
-                
-            
-            with open(os.path.join(SFM_DATAROOT, session, 'loop_result.txt'), 'w') as f:
-                f.write(output_result)
+            rre, rte, tp = eval_loop(pose_src, pose_ref, T_pnp)
+            output_result += '{} {} '.format(pred['src_frame'], 
+                                                pred['ref_frame'])
+            output_result += '{} {:.3f} {:.3f}\n'.format(tp, rre, rte)
+            tp_array.append(tp)
+        
+        #
+        tp_array = np.array(tp_array)
+        print('TP {}/{}'.format(tp_array.sum(), len(tp_array)))
+        
+        with open(os.path.join(SFM_DATAROOT, session, 'loop_result.txt'), 'w') as f:
+            f.write(output_result)
