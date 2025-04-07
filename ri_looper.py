@@ -479,7 +479,7 @@ def multi_session_slam(dataroot, sfm_output_dataroot,src_scan, ref_scan):
 
 def multi_agent_slam(dataroot, sfm_output_folder,src_scan, ref_scan):
     overwrite = False
-    VIZ = False
+    VIZ = True
     SOLVEPNP = True
     SAMPLE_GAP = 10
     MIN_MATCHES = 3
@@ -617,6 +617,7 @@ def multi_agent_slam(dataroot, sfm_output_folder,src_scan, ref_scan):
     if os.path.exists(pnp_folder)==False:
         os.mkdir(pnp_folder)
     pnp_timing_record = []
+    correspondences_number = []
     
     for query_frame in src_image_list:
         pnp_duration = 0.0
@@ -690,10 +691,22 @@ def multi_agent_slam(dataroot, sfm_output_folder,src_scan, ref_scan):
                                  frame_pairs, 
                                  loop_transformatins, False)
         pnp_timing_record.append(pnp_duration)
+        
+        #
+        correspondences_number.append({'query_frame':query_frame_name,
+                                       'loop_frame':rank_candidate_frames[0],
+                                       'corr_number':matches.shape[0]})
 
     pnp_timing_record = 1000 * np.array(pnp_timing_record)
     np.savetxt(output_folder/'pnp_timing.txt',pnp_timing_record, fmt='%.3f')
     print('Finished')
+    
+    with open(output_folder/'correspondences_number.txt','w') as f:
+        for item in correspondences_number:
+            f.write('{} {} {}\n'.format(item['query_frame'],
+                                        item['loop_frame'],
+                                        item['corr_number']))
+        f.close()
 
 
 def single_session_lcd(session_dir:Path,
@@ -933,19 +946,23 @@ if __name__=='__main__':
     #     
     scene_pairs =[
                 #   ['uc0110_00a','uc0110_00b'],
-                ['uc0110_00a','uc0110_00c'],
-                ['uc0115_00a','uc0115_00b'],
-                ['uc0115_00a','uc0115_00c'],
-                ['uc0204_00a','uc0204_00c'],
-                ['uc0204_00a','uc0204_00b'],
-                ['uc0111_00a','uc0111_00b'],
-                ['ab0201_03c','ab0201_03a'],
-                ['ab0302_00a','ab0302_00b'],
-                ['ab0403_00c','ab0403_00d'],
-                ['ab0401_00a','ab0401_00b']
+                # ['uc0110_00a','uc0110_00c'],
+                # ['uc0115_00a','uc0115_00b'],
+                # ['uc0115_00a','uc0115_00c'],
+                # ['uc0204_00a','uc0204_00c'],
+                # ['uc0204_00a','uc0204_00b'],
+                # ['uc0111_00a','uc0111_00b'],
+                # ['ab0201_03c','ab0201_03a'],
+                # ['ab0302_00a','ab0302_00b'],
+                # ['ab0403_00c','ab0403_00d'],
+                # ['ab0401_00a','ab0401_00b']
+                ['uc0150_00','uc0150_01']
                   ]
     
     for pair in scene_pairs:
         print('Processing {}-{}'.format(pair[0],pair[1]))
         # multi_session_slam(dataroot, sfm_dataroot/'multi_session', pair[0], pair[1])
-        multi_agent_slam(DATAROOT, SFM_DATAROOT/'multi_agent', pair[0], pair[1])
+        multi_agent_slam(DATAROOT, 
+                         SFM_DATAROOT/'multi_agent', 
+                         pair[0], 
+                         pair[1])
