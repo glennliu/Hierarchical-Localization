@@ -22,7 +22,45 @@ def save_loop_transformation(out_dir:str,
         f.close()
         print('Save {}/{} loop transformations.'.format(count,len(loop_transformations)))
 
+def save_loop_true_masks(out_dir:str,
+                         loop_eval_list:list):
+    with open(out_dir,'w') as f:
+        f.write('# src_frame ref_frame true_positive R_err(deg) t_err(m) \n')
+        for loop_eval_dict in loop_eval_list:
+            f.write('{} {} '.format(loop_eval_dict['src_frame'],
+                                    loop_eval_dict['ref_frame']))
+            f.write('{} {:.3f} {:.3f}\n'.format(loop_eval_dict['true_positive'],
+                                        loop_eval_dict['R_err'],
+                                        loop_eval_dict['t_err']))
+        f.close()
+        print('Save {} loop with evaluation masks to {}'.format(len(loop_eval_list),
+                                                                out_dir))
 
+def load_loop_true_masks(f_dir:str):
+    loop_eval_list = []
+    count = 0
+    with open(f_dir,'r') as f:
+        lines = f.readlines()
+        for line in lines[1:]:
+            line = line.strip()
+            if len(line) == 0:
+                continue
+            items = line.split(' ')
+            loop_eval_dict = {}
+            loop_eval_dict['src_frame'] = items[0]
+            loop_eval_dict['ref_frame'] = items[1]
+            loop_eval_dict['true_positive'] = int(items[2])
+            if loop_eval_dict['true_positive']>0:
+                count += 1
+            loop_eval_dict['R_err'] = float(items[3])
+            loop_eval_dict['t_err'] = float(items[4])
+            loop_eval_list.append(loop_eval_dict)
+        f.close()
+    
+        print('{}/{} true positive loop pairs'.format(count,
+                                                      len(loop_eval_list)))
+    return loop_eval_list
+ 
 def read_all_poses(pose_folder):
     pose_files = glob.glob(os.path.join(pose_folder, '*.txt'))
     pose_map = {}

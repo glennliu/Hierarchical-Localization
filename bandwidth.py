@@ -5,6 +5,7 @@ class BandwidthSummary():
         self.dim_netvlad = 4096
         self.dim_sp_feature = 256 + 1 # desciptor + score
         self.bytes_per_uv = 2
+        self.bytes_of_depth = 4
         
         self.image_number = 0
         self.sp_number = []
@@ -14,7 +15,7 @@ class BandwidthSummary():
         
         
         netvlad_bw = self.image_number * self.dim_netvlad * 4
-        sp_bw = self.sp_number.sum() * (self.dim_sp_feature * 4 + 2 * self.bytes_per_uv)
+        sp_bw = self.sp_number.sum() * (self.dim_sp_feature * 4 + 2 * self.bytes_per_uv + self.bytes_of_depth)
         rgb_bw = self.image_number * 640 * 480 * 3 * 1
         
         netvlad_bw = netvlad_bw / 1024 # KB

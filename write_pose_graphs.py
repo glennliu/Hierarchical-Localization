@@ -3,8 +3,10 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 from ri_looper import read_loop_pairs, read_loop_transformations, save_loop_transformation
 from ri_looper import read_frame_list
+from register_sequence import relative_rotation_error, realtive_translation_error
 from timing import SequenceTimingRecord
 from bandwidth import BandwidthSummary
+from tools import save_loop_true_masks
 
 def read_all_poses(pose_folder):
     pose_files = glob.glob(os.path.join(pose_folder, '*.txt'))
@@ -185,6 +187,28 @@ def write_frames_transfromation(transformation_list, output_file):
             f.write('{:.6f} {:.6f} {:.6f} {:.6f}\n'.format(quat[0],quat[1],quat[2],quat[3]))
         f.close()
         print('Write {} transformation to {}'.format(len(transformation_list), output_file))
+
+def load_frame_transformations(file:str,
+                               verbose:bool=False):
+    ''' 
+    Load the transformation between two frames.
+    '''
+    transformation_map = {}
+    with open(file,'r') as f:
+        lines = f.readlines()
+        for line in lines[1:]:
+            src_frame, ref_frame, tx, ty, tz, qx, qy, qz, qw = line.split()
+            T_ref_src = np.zeros((4,4))
+            T_ref_src[0,:] = [float(tx), float(ty), float(tz), 1.0]
+            T_ref_src[1,:] = [float(qx), float(qy), float(qz), 0.0]
+            T_ref_src[2,:] = [float(qw), 0.0, 0.0, 0.0]
+            T_ref_src[3,:] = [0.0, 0.0, 0.0, 1.0]
+            transformation_map['{}'.format(src_frame)] = {'ref_frame':ref_frame,
+                                                            'pose':T_ref_src}
+        f.close()
+        if verbose:
+            print('Load {} transformations from {}'.format(len(transformation_map), file))
+        return transformation_map
     
 def process_image_matching(pnp_predictions:list,
                         src_scene_dir:str,
@@ -258,7 +282,8 @@ if __name__=='__main__':
     sfm_dataroot = '/data2/sfm'
     OUTPUT_FOLDER = os.path.join(dataroot, 'output', 'hloc')
     WRITE_PG_FOLDER = False
-    EVAL_MATCHES = True
+    # EVAL_MATCHES = False
+    EVAL = True
     SUMMARY_MS_TIMING = False
     SUMMARY_MA_TIMING = False
     SUMMARY_MA_BANDWIDTH = False
@@ -270,12 +295,14 @@ if __name__=='__main__':
                 # ['uc0115_00a','uc0115_00b'],
                 # ['uc0115_00a','uc0115_00c'],
                 # ['uc0204_00a','uc0204_00c'],
-                ['uc0204_00a','uc0204_00b'],
+                # ['uc0204_00a','uc0204_00b'],
                 # ['uc0111_00a','uc0111_00b'],
                 # ['ab0201_03c','ab0201_03a'],
                 # ['ab0302_00a','ab0302_00b'],
                 # ['ab0403_00c','ab0403_00d'],
                 # ['ab0401_00a','ab0401_00b']
+                ['uc0151_02','uc0151_00'], # overlap trajectory
+                ['uc0151_01','uc0151_00'] # reverse trajectory
                 ]
     ms_frame_number = 0
     ma_frame_numer = 0
@@ -288,22 +315,20 @@ if __name__=='__main__':
         
         pair_folder = os.path.join(sfm_dataroot, 'multi_agent','{}-{}'.format(pair[0],pair[1]))
         pair_output_folder = os.path.join(OUTPUT_FOLDER,'{}-{}'.format(pair[0],pair[1]))
-        gt_pose = np.loadtxt(os.path.join(dataroot,'gt','{}-{}.txt'.format(pair[0],pair[1])))
         if os.path.exists(pair_output_folder)==False:
             os.makedirs(pair_output_folder)
         
         pnp_predictions = read_pnp_folder(os.path.join(pair_folder,'pnp'))
         src_frame_poses = read_all_poses(os.path.join(dataroot,'scans',pair[0],'pose'))
         ref_frame_poses = read_all_poses(os.path.join(dataroot,'scans',pair[1],'pose'))
-                    
+        predictions = compute_relative_predictions(pnp_predictions, 
+                                            src_frame_poses,
+                                            ref_frame_poses) # T_ref_src     
+                       
         if WRITE_PG_FOLDER:
             pgo_folder = os.path.join(pair_folder,'pose_graph')
             if os.path.exists(pgo_folder)==False:
                 os.makedirs(pgo_folder)
-            
-            predictions = compute_relative_predictions(pnp_predictions, 
-                                                src_frame_poses,
-                                                ref_frame_poses) # T_ref_src
             
             write_scene_poses(src_frame_poses,
                             os.path.join(pgo_folder,'src_poses.txt'))
@@ -312,7 +337,32 @@ if __name__=='__main__':
             write_frames_transfromation(predictions, 
                             os.path.join(pair_output_folder,'predictions.txt'))
         
-        if EVAL_MATCHES:
+        
+        if EVAL:
+            print('--- EVAL ---')
+            gt_pose = np.loadtxt(os.path.join(dataroot,'gt','{}-{}.txt'.format(pair[0],pair[1])))
+            print('Load GT from {}'.format(os.path.join(dataroot,'gt','{}-{}.txt'.format(pair[0],pair[1]))))
+            ROT_THRESHOLD = 5
+            POS_THRESHOLD = 1.5
+            eval_list = []
+            for pred in predictions:
+                src_frame = pred['src_frame']
+                ref_frame = pred['ref_frame']
+                T_ref_src = pred['pose']
+                error_rot = relative_rotation_error(gt_pose[:3,:3], 
+                                                    T_ref_src[:3,:3])
+                error_trans = realtive_translation_error(gt_pose[:3,3],
+                                                        T_ref_src[:3,3])
+                tp = int(error_rot<ROT_THRESHOLD and error_trans<POS_THRESHOLD)
+                eval_list.append({'src_frame':src_frame,
+                                  'ref_frame':ref_frame,
+                                  'true_positive':tp,
+                                  'R_err':error_rot,
+                                  't_err':error_trans})
+            save_loop_true_masks(os.path.join(pair_output_folder,'eval.txt'),
+                                eval_list)
+        
+        if False:
             import h5py
             MATCH_FILE = 'matches-superpoint-lightglue.h5'
             FEATURE_FILE = 'superpoint.h5'

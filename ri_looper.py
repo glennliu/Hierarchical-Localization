@@ -956,7 +956,8 @@ if __name__=='__main__':
                 # ['ab0302_00a','ab0302_00b'],
                 # ['ab0403_00c','ab0403_00d'],
                 # ['ab0401_00a','ab0401_00b']
-                ['uc0150_00','uc0150_01']
+                ['uc0151_02','uc0151_00'], # overlap trajectory
+                ['uc0151_01','uc0151_00'] # reverse trajectory
                   ]
     
     for pair in scene_pairs:
