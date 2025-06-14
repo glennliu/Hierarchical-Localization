@@ -21,7 +21,6 @@ from hloc.utils import io
 from timing import TimingRecord
 from estimator import computeLoopTransformation, computeTeaserTransformation
 
-
 def get_image_idxs(db_dir):
     from scipy.spatial.transform import Rotation as R
 
@@ -102,29 +101,6 @@ def read_loop_pairs(in_dir:str):
             loop_pairs.append(line.strip().split())
         f.close()
     return loop_pairs
-
-def read_loop_transformations(in_dir:str):
-    loop_pairs = []
-    loop_transformations = []
-    with open(in_dir,'r') as f:
-        for line in f.readlines():
-            if '#' in line: continue
-            elements = line.strip().split()
-            src_frame = elements[0]
-            ref_frame = elements[1]
-            tvec = np.array([float(x) for x in elements[2:5]])
-            quat = np.array([float(x) for x in elements[5:9]])
-            T_ref_src = np.eye(4)
-            T_ref_src[:3,:3] = R.from_quat(quat).as_matrix()
-            T_ref_src[:3,3] = tvec
-            
-            loop_pairs.append([src_frame, ref_frame])
-            loop_transformations.append(T_ref_src)
-            # loop_transformations.append({'src_frame':src_frame, 
-            #                             'ref_frame':ref_frame, 
-            #                             'T_ref_src':T_ref_src})
-        f.close()
-        return loop_pairs, loop_transformations
             
 def get_ordered_matches(dense_match_dir:str, query_name, ref_candidate_names):
     candidate_names = []

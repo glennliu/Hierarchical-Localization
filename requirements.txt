@@ -1,12 +1,14 @@
 # torch>=1.1
 # torchvision>=0.3
 numpy
-# opencv-python
+opencv-python
 tqdm>=4.36.0
 matplotlib
 plotly
 scipy
 h5py
+rerun-sdk
+open3d
 # pycolmap>=0.6.0
 # kornia>=0.6.11
 gdown

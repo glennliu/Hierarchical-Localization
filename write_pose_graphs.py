@@ -1,12 +1,12 @@
 import os, glob 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
-from ri_looper import read_loop_pairs, read_loop_transformations, save_loop_transformation
+from ri_looper import read_loop_pairs, save_loop_transformation
 from ri_looper import read_frame_list
 from register_sequence import relative_rotation_error, realtive_translation_error
 from timing import SequenceTimingRecord
 from bandwidth import BandwidthSummary
-from tools import save_loop_true_masks
+from tools import save_loop_true_masks, read_pnp_folder
 
 def read_all_poses(pose_folder):
     pose_files = glob.glob(os.path.join(pose_folder, '*.txt'))
@@ -57,22 +57,6 @@ def read_timing_record(timing_file:str):
             
         f.close()
         return frame_number, np.array(time_array)
-
-def read_pnp_folder(dir):
-    files = glob.glob(os.path.join(dir,'*.txt'))
-    files = sorted(files)
-    pnp_predictions = []
-    
-    for f in files:
-        pairs, transformations = read_loop_transformations(f)
-        if len(pairs)>0:
-            src_frame = pairs[0][0]
-            ref_frame = pairs[0][1]
-            pnp_predictions.append({'src_frame':src_frame, 
-                                    'ref_frame':ref_frame, 
-                                    'pose':transformations[0]})
-        
-    return pnp_predictions
 
 def write_scene_poses(frame_poses:dict, outfile_dir:str):
     with open(outfile_dir,'w') as f:

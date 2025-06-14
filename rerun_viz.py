@@ -5,7 +5,7 @@ import rerun as rr
 import rerun.blueprint as rrb
 import cv2
 from scipy.spatial.transform import Rotation as R
-from write_pose_graphs import load_frame_transformations
+# from write_pose_graphs import load_frame_transformations
 from tools import load_loop_true_masks
 
 def read_poses(pose_folder:str,
@@ -38,8 +38,9 @@ def read_rgb_images(rgb_folder:str,
     if len(pose_map)>0:
         for frame_name, _ in pose_map.items():
             rgb_file = os.path.join(rgb_folder, f"{frame_name}.png")
-            tmp_img = cv2.imread(rgb_file, cv2.IMREAD_UNCHANGED)
-            rgb_images[frame_name] = cv2.cvtColor(tmp_img, cv2.COLOR_BGR2RGB)
+            if os.path.exists(rgb_file):
+                kf = cv2.imread(rgb_file)
+                rgb_images[frame_name] = kf
     else:
         print('Not implemented yet')
     
@@ -149,15 +150,14 @@ def render_agent_poses(agentName:str,
     
 def render_rgb_sequence(entity_name:str,
                         rgb_images:dict,
-                        frame_gap:float=0.1,
                         frame_offset:int=0):
     
     for frame_name, rgb in rgb_images.items():
         frame_id = int(frame_name.split('-')[-1])
-        timestamp = frame_id * frame_gap
+        cv2.imwrite('temp_image.png', rgb)  # Save the image temporarily
         rr.set_time_sequence('frame', frame_id-frame_offset)
-        rr.log('{}/image/rgb'.format(entity_name),
-               rr.Image(rgb))
+        rr.log('{}/rgb'.format(entity_name),
+               rr.Image(rgb, color_model=rr.ColorModel.BGR,))
 
 def render_loop_edges(name:str,
                     src_poses:dict,
@@ -165,18 +165,20 @@ def render_loop_edges(name:str,
                     loop_transformations:dict,
                     verbose:bool=False):
     for src_frame, loop_info in loop_transformations.items():
+        frame_id = int(src_frame.split('-')[-1])
         ref_frame = loop_info['ref_frame']
-        loop_name = '{}-{}'.format(src_frame, ref_frame)
+        # loop_name = '{}-{}'.format(src_frame, ref_frame)
         if src_frame in src_poses and ref_frame in ref_poses:
+            rr.set_time_sequence('frame', frame_id)
             src_pose = src_poses[src_frame]
             ref_pose = ref_poses[ref_frame]
             end_points = [src_pose[:3,3].reshape(3),
                         ref_pose[:3,3].reshape(3)]
             
-            rr.log('{}/{}'.format(name,loop_name),
+            rr.log('{}'.format(name),
                             rr.LineStrips3D(end_points,
-                                               colors=[0,1,0],
-                                               radii=0.02))
+                                            colors=[0,255,0],
+                                            radii=0.02))
 
 def render_loop_edges_2(entityName:str,
                     src_poses:dict,
@@ -226,20 +228,29 @@ if __name__=='__main__':
     VERBOSE = True
     MAX_FRAME = 5000
     FRAME_STRIDE = 10
-    VIZ_MODE = 3 # 0: spawn, 1: conect_tcp, 2: serve_web, 3: save
+    VIZ_MODE = 1 # 0: spawn, 1: conect_tcp, 2: serve_web, 3: save
     FRAME_DURATION = 0.1
-    SRC_NAME = 'uc0151_02'
-    REF_NAME = 'uc0151_00'
+    SRC_NAME = 'uc0110_00a'
+    REF_NAME = 'uc0110_00c'
+    EXT_NAME = 'uc0101_00c'
+    
     SRC_SCENE_DIR = 'datasets/'+SRC_NAME
     REF_SCENE_DIR = 'datasets/'+REF_NAME
-    RESULT_FOLDER = '/data2/sgslam/output/hloc/'+SRC_NAME+'-'+REF_NAME
-    GT_FILE = '/data2/sgslam/gt/{}-{}.txt'.format(SRC_NAME,REF_NAME)
+    EXT_SCENE_DIR = 'datasets/'+EXT_NAME
+    
+    RESULT_FOLDER = None # '/data2/sgslam/output/hloc/'+SRC_NAME+'-'+REF_NAME
+    GT_FILE = '/Users/liuchuhao/dataset/sgslam/gt/{}-{}.txt'.format(SRC_NAME,REF_NAME)
+    REMOTE_ADDRESS = "143.89.38.169:9876"
     ############################################
     
     # 1. Load
     print('----- Loading -----')
     src_scene=load_single_agent(SRC_SCENE_DIR,FRAME_STRIDE,MAX_FRAME,VERBOSE)
     ref_scene=load_single_agent(REF_SCENE_DIR,FRAME_STRIDE,MAX_FRAME,VERBOSE)
+    if EXT_SCENE_DIR is not None:
+        ext_scene=load_single_agent(EXT_SCENE_DIR,FRAME_STRIDE,MAX_FRAME,VERBOSE)
+        T_ref_ext = np.loadtxt(os.path.join('/Users/liuchuhao/dataset/sgslam/gt/uc0101_00c-uc0110_00c.txt'))
+        transform_scene(ext_scene, T_ref_ext)
 
     if GT_FILE is not None:
         print('----- Load GT -----')
@@ -255,18 +266,34 @@ if __name__=='__main__':
     # 2. Visualize
     print('----- Visualizing -----')
     rr.init("multiAgent")
-    
     rr.set_time_sequence('frame',0)
+    
+    rr.log("world",rr.Transform3D(axis_length=20,scale=1.0),
+                static=False
+            )
+    rr.log("world",rr.Transform3D(translation=[0,0,-3]))
+    
     render_point_cloud(src_scene['global_map'],
                        'agentA/global_map',
-                       0.01,
+                       0.03,
                     #    [180,180,0]
                        )
     render_point_cloud(ref_scene['global_map'],
                        'agentB/global_map',
-                       0.01,
+                       0.03,
                     #    [0,180,180]
                        )
+    if EXT_SCENE_DIR is not None:
+        render_point_cloud(ext_scene['global_map'],
+                           'agentC/global_map',
+                           0.03,
+                           )
+        render_agent_poses('agentC',
+                           ext_scene['poses'],
+                       FRAME_DURATION,
+                       [0,200,0],
+                       0.03)
+    
     
     render_agent_poses('agentA', 
                        src_scene['poses'],
@@ -298,7 +325,7 @@ if __name__=='__main__':
     if VIZ_MODE==0:
         rr.spawn()
     elif VIZ_MODE==1:    
-       rr.connect_tcp("143.89.38.169:9876")
+       rr.connect_tcp()
     elif VIZ_MODE==2:
         rr.serve_web(web_port=0,ws_port=0,open_browser=False)
     elif VIZ_MODE==3:
