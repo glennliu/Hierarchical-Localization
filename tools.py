@@ -70,3 +70,44 @@ def read_all_poses(pose_folder):
         pose_map[frame_name] = pose
     
     return pose_map
+
+def read_loop_transformations(in_dir:str):
+    loop_pairs = []
+    loop_transformations = []
+    with open(in_dir,'r') as f:
+        for line in f.readlines():
+            if '#' in line: continue
+            elements = line.strip().split()
+            src_frame = elements[0]
+            ref_frame = elements[1]
+            tvec = np.array([float(x) for x in elements[2:5]])
+            quat = np.array([float(x) for x in elements[5:9]])
+            T_ref_src = np.eye(4)
+            T_ref_src[:3,:3] = R.from_quat(quat).as_matrix()
+            T_ref_src[:3,3] = tvec
+            
+            loop_pairs.append([src_frame, ref_frame])
+            loop_transformations.append(T_ref_src)
+            # loop_transformations.append({'src_frame':src_frame, 
+            #                             'ref_frame':ref_frame, 
+            #                             'T_ref_src':T_ref_src})
+        f.close()
+        return loop_pairs, loop_transformations
+    
+def read_pnp_folder(dir:str, verbose=False):
+    files = glob.glob(os.path.join(dir,'*.txt'))
+    files = sorted(files)
+    pnp_predictions = []
+    
+    for f in files:
+        pairs, transformations = read_loop_transformations(f)
+        if len(pairs)>0:
+            src_frame = pairs[0][0]
+            ref_frame = pairs[0][1]
+            pnp_predictions.append({'src_frame':src_frame, 
+                                    'ref_frame':ref_frame, 
+                                    'pose':transformations[0]})
+    
+    if verbose:
+        print('Load {} pnp constraints from {}'.format(len(pnp_predictions), dir))
+    return pnp_predictions
