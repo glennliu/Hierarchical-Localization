@@ -20,6 +20,7 @@ from hloc.utils.io import get_matches
 from hloc.utils import io
 from timing import TimingRecord
 from estimator import computeLoopTransformation, computeTeaserTransformation
+from tools import save_loop_pairs, save_loop_transformation
 
 def get_image_idxs(db_dir):
     from scipy.spatial.transform import Rotation as R
@@ -53,30 +54,6 @@ def update_3d_keypoints(db_dir):
 
     db.close()
 
-def save_loop_pairs(out_dir:str, loop_pairs:list):
-    with open(out_dir,'w') as f:
-        f.write('# src_frame ref_frame\n')
-        for pair in loop_pairs:
-            f.write('{} {}\n'.format(pair[0],pair[1]))
-        f.close()
-        
-def save_loop_transformation(out_dir:str, loop_pairs:list, loop_transformations:list, valid_only:bool):
-    with open(out_dir,'w') as f:
-        count = 0
-        f.write('# src_frame ref_frame tx ty tz qx qy qz qw\n')
-        for pair, T in zip(loop_pairs, loop_transformations):
-            fail_pnp = np.allclose(T, np.eye(4))
-            if fail_pnp and valid_only:
-                continue
-            
-            translation = T[:3,3]
-            quaternion = R.from_matrix(T[:3,:3]).as_quat()
-            f.write('{} {} '.format(pair[0],pair[1]))
-            f.write('{:.3f} {:.3f} {:.3f} '.format(translation[0],translation[1],translation[2]))
-            f.write('{:.6f} {:.6f} {:.6f} {:.6f}\n'.format(quaternion[0],quaternion[1],quaternion[2],quaternion[3]))
-            count+=1
-        f.close()
-        print('Save {}/{} loop transformations.'.format(count,len(loop_transformations)))
 
 def save_frame_list(frames:list, out_dir:str):
     with open(out_dir,'w') as f:
@@ -686,19 +663,22 @@ def multi_agent_slam(dataroot, sfm_output_folder,src_scan, ref_scan):
 
 
 def single_session_lcd(session_dir:Path,
+                       timestamp:list,
+                       src_image_list:list,
                        output_folder:Path):
     os.makedirs(output_folder,exist_ok=True)
     session_name = os.path.basename(session_dir)
 
     # Hard-code params
-    overwrite = True
-    VIZ = False
-    ESTIMATOR = 'pnp' # 'teaser' or 'pnp'
-    SAMPLE_GAP = 10
-    MIN_MATCHES = 3
-    WINDOW_FRAMES = 300
+    overwrite = False
+    VIZ = True
+    ESTIMATOR = None # 'teaser' or 'pnp' or None
+    SAMPLE_GAP = 20
+    WINDOW_FRAMES = 200 # only frames with index gap larger than the window are considered
+    MIN_MATCHES = 30
     GLOABL_TOPK = 3
-    global_min_score = 0.01
+    GLOBAL_MIN_SCORE = 0.02
+    LOCAL_MIN_SCORE = 0.2 # minimum score for point matches
     LOCAL_TOPK = 1
     
     # Initialization
@@ -732,12 +712,10 @@ def single_session_lcd(session_dir:Path,
     os.makedirs(tmp_folder,exist_ok=True)
 
     # 
-    src_image_list = [p.relative_to(session_dir).as_posix() for p in (session_dir/'rgb').iterdir()]
+    # src_image_list = [p.relative_to(session_dir).as_posix() for p in (session_dir/'rgb').iterdir()]
     src_image_list = sorted(src_image_list)[::SAMPLE_GAP]
     save_frame_list([img.split('/')[-1].split('.')[0] for img in src_image_list], 
                 output_folder/'src_frames.txt')
-    print('Load {} frames'.format(len(src_image_list)))
-    
     # 1. global features
     tictoc = TicToc()
     extract_features.main(netvlad_feat_conf, 
@@ -757,7 +735,6 @@ def single_session_lcd(session_dir:Path,
                             overwrite=overwrite,
                             duration_list=timing_record.superpoint) # local features
     print('Extract superpoint features takes {:.3f} sec'.format(tictoc.toc())) 
-    
     
     # 3. Hierachical matching
     count_superpoints = 0
@@ -781,7 +758,7 @@ def single_session_lcd(session_dir:Path,
                                                     db_list = db_frames,
                                                     db_descriptors=global_feat_dir,
                                                     duration_list= duration_gmatch,
-                                                    min_score=global_min_score)
+                                                    min_score=GLOBAL_MIN_SCORE)
         duration_gmatch = 1000 * duration_gmatch[0]
 
         if not os.path.exists(global_loop_dir):
@@ -804,7 +781,7 @@ def single_session_lcd(session_dir:Path,
             duration_lmatch = 0
         print('Global match takes {:.3f} ms, local match takes {:.3f} ms'.format(duration_gmatch,duration_lmatch))
         
-        # c. pose estimation
+        # c. reorder candidates
         pnp_duration = 0.0
 
         candidate_ref_frames = parse_retrieval(global_loop_dir)
@@ -819,16 +796,15 @@ def single_session_lcd(session_dir:Path,
         if(len(rank_candidate_frames)<1): continue
         select_candidates = min(LOCAL_TOPK,
                                 len(rank_candidate_frames))
-        
-        kpts0 = io.get_keypoints(path=local_feat_dir, 
-                                 name=query_frame)
-        rgb0 = io.read_image(session_dir/query_frame)        
-        
-        # compute PnP for all the loops
+
+        # d. compute PnP for all the loops
         frame_pairs = []
         loop_transformatins = []
-        query_frame_name = query_frame.split('/')[-1].split('.')[0]
 
+        query_frame_name = query_frame.split('/')[-1].split('.')[0]
+        kpts0 = io.get_keypoints(path=local_feat_dir, 
+                                name=query_frame)
+        rgb0 = io.read_image(session_dir/query_frame)  
         for ref_candidate in rank_candidate_frames[:select_candidates]:
             ref_frame_name = ref_candidate.split('/')[-1].split('.')[0]
             kpts1 = io.get_keypoints(path=local_feat_dir, name=ref_candidate)
@@ -838,16 +814,20 @@ def single_session_lcd(session_dir:Path,
             if(matches is None):continue
             if(matches.shape[0]<1): continue
             if((matches[:,0].max()>=kpts0.shape[0]) or 
-               (matches[:,1].max()>=kpts1.shape[0])): 
+            (matches[:,1].max()>=kpts1.shape[0])): 
                 print('skip invalid matches for {}-{}'.format(query_frame,ref_candidate))
                 continue
+            
+            mask = scores>LOCAL_MIN_SCORE
+            matches = matches[mask]
+            scores = scores[mask]            
             if(matches.shape[0]<MIN_MATCHES):continue
-                 
+                
             if VIZ:
                 viz.plot_images([rgb0, rgb1], dpi=75)
                 viz.plot_matches(kpts0[matches[:, 0], :2], 
-                                 kpts1[matches[:, 1], :2], 
-                                 lw=1.5, a=0.5)
+                                kpts1[matches[:, 1], :2], 
+                                lw=1.5, a=0.5)
                 # inliner_text = '{}/{} matched pts'.format(matches.shape[0],kpts0.shape[0])
                 # viz.add_text(0,inliner_text)
                 output_name = query_frame_name+'-'+ref_frame_name
@@ -889,17 +869,20 @@ def single_session_lcd(session_dir:Path,
             loop_transformatins.append(T_ref_src) # transformation between images
 
         # Save loop transformations
-        if ESTIMATOR=='pnp':
+        if ESTIMATOR is not None:
             save_loop_transformation(pnp_folder/'{}.txt'.format(query_frame_name), 
                                     frame_pairs, 
                                     loop_transformatins, 
                                     False)
+        else:
+            save_loop_pairs(loop_folder/'{}.txt'.format(query_frame_name),
+                           frame_pairs)
+                   
         
         # Timing
         frame_time = np.array([len(db_frames), global_match_pairs, 
                                duration_gmatch, duration_lmatch, 1000*pnp_duration])
         match_timing_record.append(frame_time)
-        # break
 
     # 
     if len(match_timing_record)>0:
