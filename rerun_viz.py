@@ -7,29 +7,7 @@ import cv2
 from scipy.spatial.transform import Rotation as R
 # from write_pose_graphs import load_frame_transformations
 from tools import load_loop_true_masks
-
-def read_poses(pose_folder:str,
-                stride:int=1,
-                verbose:bool=False):
-    pose_files = glob.glob(os.path.join(pose_folder, "*.txt"))
-    pose_files = sorted(pose_files)
-    min_frame_id = int(os.path.basename(pose_files[0]).split(".")[0][6:])
-    if min_frame_id>0:
-        print('Start frame id: {}'.format(min_frame_id))
-    
-    poses = {}
-    for i in range(0,len(pose_files),stride):
-        pose_file = pose_files[i]
-        frame_name = os.path.basename(pose_file).split(".")[0]
-        # frame_id = int(frame_name.split("-")[-1])
-        T_wc = np.loadtxt(pose_file)
-        # calibrated_frame_id = frame_id - frame_offset
-        # poses['frame-{:06d}'.format(calibrated_frame_id)] = T_wc
-        poses[frame_name] = T_wc
-    
-    if verbose:
-        print(f"Loaded {len(poses)} poses from {pose_folder}")
-    return poses, min_frame_id
+from dataloader import read_poses
 
 def read_rgb_images(rgb_folder:str,
                     pose_map:dict,
@@ -120,7 +98,7 @@ def render_agent_poses(agentName:str,
                       color:list=[0,0,255],
                       path_width:float=0.02,
                       frame_offset:int=0):
-    
+    print('Rendering {} poses'.format(len(pose_dict)))
     w,h = 640,480
     fx,fy,cx,cy = 619, 618, 336, 246
     intrinsic = np.array([[fx, 0, cx],
@@ -129,15 +107,18 @@ def render_agent_poses(agentName:str,
     points3d = []
 
     for frame_name, pose in pose_dict.items():
-        frame_id = int(frame_name.split('-')[-1])
-        timestamp = frame_id * frame_gap
-        # rr.set_time_seconds('time', timestamp)
-        rr.set_time_sequence('frame', frame_id-frame_offset)
+        if isinstance(frame_name, str):
+            frame_id = int(frame_name.split('-')[-1])
+        else:
+            frame_id = int(frame_name)
+        # timestamp = frame_id * 1e-9
+        rr.set_time_nanos('time', frame_id)
+        # rr.set_time_sequence('frame', frame_id-frame_offset)
         q = R.from_matrix(pose[:3,:3]).as_quat()
         t = pose[:3,3]
-        rr.log('{}/pose'.format(agentName),
+        rr.log('{}/camera/pose'.format(agentName),
                rr.Transform3D(translation=t, rotation=rr.Quaternion(xyzw=q)))
-        rr.log('{}/pose'.format(agentName),
+        rr.log('{}/camera/pose'.format(agentName),
                rr.Pinhole(focal_length=3,
                           width=3,
                           height=3))
@@ -151,15 +132,17 @@ def render_agent_poses(agentName:str,
 def render_rgb_sequence(entity_name:str,
                         rgb_images:dict,
                         frame_offset:int=0):
-    
+    print('Rendering {} rgb images'.format(len(rgb_images)))
     for frame_name, rgb in rgb_images.items():
         frame_id = int(frame_name.split('-')[-1])
         cv2.imwrite('temp_image.png', rgb)  # Save the image temporarily
-        rr.set_time_sequence('frame', frame_id-frame_offset)
-        rr.log('{}/rgb'.format(entity_name),
+        # timestamp = frame_id * 1e-9
+        rr.set_time_nanos('time', frame_id)
+        # rr.set_time_sequence('frame', frame_id-frame_offset)
+        rr.log('{}/camera/rgb'.format(entity_name),
                rr.Image(rgb, color_model=rr.ColorModel.BGR,))
 
-def render_loop_edges(name:str,
+def render_loop_edges(entityName:str,
                     src_poses:dict,
                     ref_poses:dict,
                     loop_transformations:dict,
@@ -169,13 +152,13 @@ def render_loop_edges(name:str,
         ref_frame = loop_info['ref_frame']
         # loop_name = '{}-{}'.format(src_frame, ref_frame)
         if src_frame in src_poses and ref_frame in ref_poses:
-            rr.set_time_sequence('frame', frame_id)
+            rr.set_time_nanos('time', frame_id)
             src_pose = src_poses[src_frame]
             ref_pose = ref_poses[ref_frame]
             end_points = [src_pose[:3,3].reshape(3),
                         ref_pose[:3,3].reshape(3)]
             
-            rr.log('{}'.format(name),
+            rr.log('{}/loops/edges'.format(entityName),
                             rr.LineStrips3D(end_points,
                                             colors=[0,255,0],
                                             radii=0.02))
@@ -210,6 +193,21 @@ def render_loop_edges_2(entityName:str,
                             rr.LineStrips3D(loop_edges,
                                                colors=loop_colors,
                                                radii=0.015))
+
+def render_loop_images(entityName:str,
+                       loop_pairs:dict,
+                       sfm_folder:str,
+                       verbose:bool=False):
+    
+    for query_frame, loop_info in loop_pairs.items():
+        pair_name = '{}-{}'.format(query_frame, loop_info['ref_frame'])
+        match_img_dir = os.path.join(sfm_folder,'viz',pair_name+'.png')
+        assert os.path.exists(match_img_dir)
+        match_img = cv2.imread(match_img_dir)
+        rr.set_time_nanos('time', int(query_frame))
+        rr.log(entityName+'/loops/match_img',
+               rr.Image(match_img))
+    
 
 def transform_scene(scene_dict:dict,
                     T_ref_src:np.ndarray):
